@@ -1,0 +1,247 @@
+name: Build component
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Component branch to build (for example: flash-attention-npu, mooncake)"
+        required: true
+        type: string
+      source_ref:
+        description: "Source commit or tag override (empty = value from component.env)"
+        required: false
+        default: ""
+        type: string
+      runs_on:
+        description: "Runner labels as a JSON array"
+        required: true
+        default: '["ubuntu-22.04-arm"]'
+        type: string
+      container_image:
+        description: "CANN build container image"
+        required: true
+        default: "quay.io/ascend/cann:9.2.1-910b-ubuntu22.04-py3.12"
+        type: string
+      push_to_obs:
+        description: "Upload the build artifacts to OBS after a successful build"
+        required: true
+        default: false
+        type: boolean
+      obs_prefix:
+        description: "OBS key prefix override (empty = value from component.env)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: build-${{ inputs.component }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ inputs.component }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    container:
+      image: ${{ inputs.container_image }}
+    timeout-minutes: 360
+    steps:
+      - name: Checkout build pipeline
+        uses: actions/checkout@v4
+        with:
+          path: pipeline
+
+      - name: Validate component branch
+        env:
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          if [[ ! "$COMPONENT" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+            echo "::error::Invalid component branch name: $COMPONENT"
+            exit 1
+          fi
+          if ! git -C pipeline ls-remote --exit-code --heads origin "refs/heads/$COMPONENT" >/dev/null 2>&1; then
+            echo "::error::Component branch '$COMPONENT' does not exist in $GITHUB_REPOSITORY"
+            exit 1
+          fi
+
+      - name: Checkout component recipe
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.component }}
+          path: component
+
+      - name: Prepare build environment
+        id: prep
+        env:
+          SOURCE_REF_OVERRIDE: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          test -f component/component.env || { echo "::error::component.env is missing"; exit 1; }
+          test -f component/build.sh || { echo "::error::build.sh is missing"; exit 1; }
+          set -a
+          # shellcheck disable=SC1091
+          source component/component.env
+          set +a
+          : "${COMPONENT:?component.env must set COMPONENT}"
+          : "${SOURCE_REPO:?component.env must set SOURCE_REPO}"
+          : "${SOURCE_REF:?component.env must set SOURCE_REF}"
+          export OBS_PREFIX="${OBS_PREFIX:-source-builds}"
+          export ARTIFACT_PATTERN="${ARTIFACT_PATTERN:-*.whl}"
+          export ARTIFACT_DIR="$GITHUB_WORKSPACE/artifacts"
+          export SOURCE_DIR="$RUNNER_TEMP/source"
+          rm -rf "$ARTIFACT_DIR" "$SOURCE_DIR"
+          mkdir -p "$ARTIFACT_DIR" "$SOURCE_DIR"
+          PYTHON_VERSION="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          PYTHON_TAG="$(python3 -c 'import sys; print("cp%d%d" % sys.version_info[:2])')"
+          ARCH="$(uname -m)"
+          COMPONENT_SHA="$(git -C component rev-parse HEAD)"
+          {
+            echo "COMPONENT=$COMPONENT"
+            echo "SOURCE_REPO=$SOURCE_REPO"
+            echo "SOURCE_REF=$SOURCE_REF"
+            echo "OBS_PREFIX=$OBS_PREFIX"
+            echo "ARTIFACT_PATTERN=$ARTIFACT_PATTERN"
+            echo "ARTIFACT_DIR=$ARTIFACT_DIR"
+            echo "SOURCE_DIR=$SOURCE_DIR"
+            echo "PYTHON_VERSION=$PYTHON_VERSION"
+            echo "PYTHON_TAG=$PYTHON_TAG"
+            echo "ARCH=$ARCH"
+            echo "COMPONENT_SHA=$COMPONENT_SHA"
+            echo "SOURCE_REF_OVERRIDE=$SOURCE_REF_OVERRIDE"
+          } >> "$GITHUB_ENV"
+          {
+            echo "python_version=$PYTHON_VERSION"
+            echo "python_tag=$PYTHON_TAG"
+            echo "arch=$ARCH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cd component
+          bash build.sh
+
+      - name: Verify artifacts
+        run: |
+          set -euo pipefail
+          count="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "$ARTIFACT_PATTERN" | wc -l)"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::The build produced no files matching '$ARTIFACT_PATTERN' in $ARTIFACT_DIR"
+            ls -la "$ARTIFACT_DIR" || true
+            exit 1
+          fi
+          find "$ARTIFACT_DIR" -maxdepth 1 -type f -name "$ARTIFACT_PATTERN" -print
+
+      - name: Write build manifest
+        env:
+          CONTAINER_IMAGE: ${{ inputs.container_image }}
+        run: |
+          set -euo pipefail
+          resolved_ref="${SOURCE_REF_OVERRIDE:-$SOURCE_REF}"
+          source_commit="$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null || true)"
+          if [ -z "$source_commit" ]; then
+            source_commit="$resolved_ref"
+          fi
+          cann_version=""
+          for info in \
+            /usr/local/Ascend/ascend-toolkit/version.info \
+            /usr/local/Ascend/latest/version.info \
+            /usr/local/Ascend/ascend-toolkit/*/version.info \
+            /usr/local/Ascend/ascend-toolkit/*/*-linux/ascend_toolkit_install.info; do
+            [ -f "$info" ] || continue
+            cann_version="$(grep -m1 'version=' "$info" | cut -d= -f2- | tr -d '"' || true)"
+            [ -n "$cann_version" ] && break
+          done
+          python3 pipeline/scripts/make_manifest.py \
+            --artifacts-dir "$ARTIFACT_DIR" \
+            --artifact-pattern "$ARTIFACT_PATTERN" \
+            --output "$ARTIFACT_DIR/manifest.json" \
+            --component "$COMPONENT" \
+            --source-repo "$SOURCE_REPO" \
+            --source-ref "$resolved_ref" \
+            --source-commit "$source_commit" \
+            --python-version "$PYTHON_VERSION" \
+            --python-tag "$PYTHON_TAG" \
+            --arch "$ARCH" \
+            --cann-version "$cann_version" \
+            --container-image "$CONTAINER_IMAGE" \
+            --component-branch "$COMPONENT" \
+            --component-commit "$COMPONENT_SHA" \
+            --recipes-commit "$(git -C pipeline rev-parse HEAD)" \
+            --obs-prefix "$OBS_PREFIX"
+
+      - name: Upload GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Write summary
+        run: |
+          {
+            echo "## Build summary"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Component | \`$COMPONENT\` |"
+            echo "| Source repository | \`$SOURCE_REPO\` |"
+            echo "| Requested source ref | \`${SOURCE_REF_OVERRIDE:-$SOURCE_REF}\` |"
+            echo "| Architecture | \`$ARCH\` |"
+            echo "| Python | \`$PYTHON_VERSION\` |"
+            echo "| OBS upload requested | \`${{ inputs.push_to_obs }}\` |"
+            echo ""
+            echo "### Artifacts"
+            echo '```'
+            (cd "$ARTIFACT_DIR" && sha256sum -- ./*)
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish to OBS
+    needs: build
+    if: ${{ inputs.push_to_obs }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout build pipeline
+        uses: actions/checkout@v4
+        with:
+          path: pipeline
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: artifacts
+
+      - name: Upload to OBS
+        env:
+          OBS_ACCESS_KEY_ID: ${{ secrets.OBS_ACCESS_KEY_ID }}
+          OBS_SECRET_ACCESS_KEY: ${{ secrets.OBS_SECRET_ACCESS_KEY }}
+          OBS_ENDPOINT: ${{ vars.OBS_ENDPOINT }}
+          OBS_BUCKET: ${{ vars.OBS_BUCKET }}
+          OBS_PREFIX_OVERRIDE: ${{ inputs.obs_prefix }}
+        run: |
+          set -euo pipefail
+          : "${OBS_ACCESS_KEY_ID:?Set the OBS_ACCESS_KEY_ID repository secret}"
+          : "${OBS_SECRET_ACCESS_KEY:?Set the OBS_SECRET_ACCESS_KEY repository secret}"
+          : "${OBS_ENDPOINT:?Set the OBS_ENDPOINT repository variable}"
+          : "${OBS_BUCKET:?Set the OBS_BUCKET repository variable}"
+          python3 -m pip install --quiet esdk-obs-python
+          python3 pipeline/scripts/upload_obs.py \
+            --dir artifacts \
+            --manifest artifacts/manifest.json \
+            --bucket "$OBS_BUCKET" \
+            --endpoint "$OBS_ENDPOINT" \
+            --root-prefix "$OBS_PREFIX_OVERRIDE" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
