@@ -45,5 +45,5 @@ gh workflow run build.yaml \
 ## Notes
 
 - The source tree is cloned into `$SOURCE_DIR` at build time; this branch only stores the recipe.
-- The default configuration builds both FA versions and NPU targets and is therefore a long compile. Narrow `FLASH_ATTN_BUILD_VERSION` / `FLASH_ATTN_BUILD_NPU` on a private branch if a smaller artifact is enough.
+- The default configuration builds every FA API generation (v2, v3, v4) and NPU target and is therefore a long compile. Narrow `FLASH_ATTN_BUILD_VERSION` / `FLASH_ATTN_BUILD_NPU` on a private branch if a smaller artifact is enough.
 - The resulting wheel is uploaded as the `build-output` GitHub artifact, and to OBS when `push_to_obs` is enabled and the OBS settings are configured on the repository.
