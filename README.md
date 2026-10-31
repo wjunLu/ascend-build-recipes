@@ -9,7 +9,7 @@ The `main` branch contains only the shared pipeline. Each additional branch cont
 | `flash-attention-npu` | [MinghuasLab/flash-attention-npu](https://github.com/MinghuasLab/flash-attention-npu) | `flash_attn_npu-*.whl` |
 | `mooncake` | [kvcache-ai/Mooncake](https://github.com/kvcache-ai/Mooncake) with the NPU transfer engine | `mooncake_transfer_engine_npu-*.whl` |
 
-The recipes mirror the source-compilation steps currently embedded in the vLLM Ascend Dockerfiles. Building them here makes the output reusable: once a wheel is published to OBS, a Dockerfile can install it instead of running a full toolchain during the image build.
+The flash-attention-npu recipe mirrors the source-compilation steps currently embedded in the vLLM Ascend Dockerfiles; the mooncake recipe follows the upstream NPU release workflow. Building them here makes the output reusable: once a wheel is published to OBS, a Dockerfile can install it instead of running a full toolchain or downloading a prebuilt wheel during the image build.
 
 ## Pipeline
 
