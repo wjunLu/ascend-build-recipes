@@ -238,7 +238,7 @@ jobs:
           : "${OBS_SECRET_ACCESS_KEY:?Set the OBS_SECRET_ACCESS_KEY repository secret}"
           : "${OBS_ENDPOINT:?Set the OBS_ENDPOINT repository variable}"
           : "${OBS_BUCKET:?Set the OBS_BUCKET repository variable}"
-          python3 -m pip install --quiet esdk-obs-python
+          python3 -m pip install --quiet 'esdk-obs-python==3.26.6'
           python3 pipeline/scripts/upload_obs.py \
             --dir artifacts \
             --manifest artifacts/manifest.json \

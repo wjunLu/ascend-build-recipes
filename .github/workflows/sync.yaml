@@ -1,0 +1,65 @@
+name: Sync OBS packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_prefix:
+        description: "Prefix in the source bucket to copy, e.g. source-builds/flash-attention-npu/"
+        required: true
+        type: string
+      destination_prefix:
+        description: "Destination prefix override (empty = same as the source prefix)"
+        required: false
+        default: ""
+        type: string
+      force:
+        description: "Overwrite destination objects that already exist with the same size"
+        required: true
+        default: false
+        type: boolean
+      dry_run:
+        description: "List matching objects without copying"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    name: Sync ${{ inputs.source_prefix }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout pipeline
+        uses: actions/checkout@v4
+
+      - name: Sync objects
+        env:
+          OBS_SOURCE_ACCESS_KEY_ID: ${{ secrets.OBS_SOURCE_ACCESS_KEY_ID }}
+          OBS_SOURCE_SECRET_ACCESS_KEY: ${{ secrets.OBS_SOURCE_SECRET_ACCESS_KEY }}
+          OBS_SOURCE_ENDPOINT: ${{ vars.OBS_SOURCE_ENDPOINT }}
+          OBS_SOURCE_BUCKET: ${{ vars.OBS_SOURCE_BUCKET }}
+          OBS_ACCESS_KEY_ID: ${{ secrets.OBS_ACCESS_KEY_ID }}
+          OBS_SECRET_ACCESS_KEY: ${{ secrets.OBS_SECRET_ACCESS_KEY }}
+          OBS_ENDPOINT: ${{ vars.OBS_ENDPOINT }}
+          OBS_BUCKET: ${{ vars.OBS_BUCKET }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet 'esdk-obs-python==3.26.6'
+          extra_args=()
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            extra_args+=(--dry-run)
+          fi
+          if [[ "${{ inputs.force }}" == "true" ]]; then
+            extra_args+=(--force)
+          fi
+          python3 scripts/sync_obs.py \
+            --source-prefix "${{ inputs.source_prefix }}" \
+            --destination-prefix "${{ inputs.destination_prefix }}" \
+            "${extra_args[@]}"

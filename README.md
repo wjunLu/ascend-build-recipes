@@ -13,7 +13,7 @@ The flash-attention-npu recipe mirrors the source-compilation steps currently em
 
 ## Pipeline
 
-[.github/workflows/build.yaml](.github/workflows/build.yaml) is started with `workflow_dispatch`. It does not run on pushes or pull requests.
+Both [.github/workflows/build.yaml](.github/workflows/build.yaml) (build and publish) and [.github/workflows/sync.yaml](.github/workflows/sync.yaml) (copy objects between two OBS instances) are started with `workflow_dispatch`. Neither runs on pushes or pull requests.
 
 Inputs:
 
@@ -75,6 +75,24 @@ Repository variables:
 
 The values are only used by the `publish` job. A run started with `push_to_obs=true` and missing credentials fails before any upload, with a message naming the missing setting.
 
+The sync workflow adds a second, independent set for the source side:
+
+Repository secrets:
+
+| Name | Description |
+| --- | --- |
+| `OBS_SOURCE_ACCESS_KEY_ID` | Source OBS access key ID |
+| `OBS_SOURCE_SECRET_ACCESS_KEY` | Source OBS secret access key |
+
+Repository variables:
+
+| Name | Example | Description |
+| --- | --- | --- |
+| `OBS_SOURCE_ENDPOINT` | `https://obs.cn-north-4.myhuaweicloud.com` | Source OBS endpoint |
+| `OBS_SOURCE_BUCKET` | `<source-bucket-name>` | Source bucket |
+
+The source and the destination may live in different regions or different accounts.
+
 ### Object layout
 
 ```text
@@ -91,6 +109,46 @@ source-builds/flash-attention-npu/9c9f00648fa1/aarch64/py312/flash_attn_npu-<ver
 `<prefix>` defaults to `source-builds` and can be overridden per component (`OBS_PREFIX` in `component.env`) or per run (`obs_prefix` input). Rebuilding the same commit on the same architecture and Python version overwrites the previous objects; the SHA-256 checksums are recorded in `manifest.json`.
 
 The public URL printed by the publish job is `https://<bucket>.<endpoint-host>/<key>`. If the bucket is private, use an authorized download mechanism instead of that URL.
+
+## Syncing packages between OBS instances
+
+[.github/workflows/sync.yaml](.github/workflows/sync.yaml) copies all objects under a prefix from the source OBS to the destination OBS. It is started manually and defaults to `dry_run=true`, which lists the matching objects without copying anything.
+
+Inputs:
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `source_prefix` | (required) | Prefix in the source bucket, for example `source-builds/flash-attention-npu/` |
+| `destination_prefix` | empty | Destination prefix; empty keeps the source path |
+| `force` | `false` | Overwrite destination objects that already exist with the same size |
+| `dry_run` | `true` | List matching objects without copying |
+
+Behavior:
+
+- Each object is downloaded to the runner and re-uploaded to the destination, so the source and destination can be in different regions or different accounts.
+- An object whose destination key already exists with the same size is skipped unless `force` is set.
+- The relative path under the prefix is preserved, and `manifest.json` files are copied along with the wheels.
+
+From the CLI:
+
+```bash
+# List what would be copied
+gh workflow run sync.yaml -R wjunLu/ascend-build-recipes \
+  -f source_prefix=source-builds/flash-attention-npu/
+
+# Copy, keeping the same prefix
+gh workflow run sync.yaml -R wjunLu/ascend-build-recipes \
+  -f source_prefix=source-builds/flash-attention-npu/ \
+  -f dry_run=false
+
+# Copy into a different prefix
+gh workflow run sync.yaml -R wjunLu/ascend-build-recipes \
+  -f source_prefix=source-builds/flash-attention-npu/ \
+  -f destination_prefix=mirror/flash-attention-npu/ \
+  -f dry_run=false
+```
+
+A run started with `dry_run=false` and missing source or destination settings fails before any copy, with a message naming the missing setting.
 
 ## Component branch contract
 
@@ -167,3 +225,4 @@ Mooncake is a long build and needs a large working disk; a self-hosted ARM64 run
 - OBS credentials are intentionally absent; `push_to_obs` defaults to `false`.
 - The pipeline does not verify wheel signatures or run smoke tests on the built wheel. Each component's `README.md` describes what the recipe builds and which upstream revision it pins.
 - Artifact retention in GitHub Actions is 14 days.
+- The sync workflow streams every object through the runner; the total size per run is bounded by the runner's free disk (about 14 GB on the default hosted runner).
