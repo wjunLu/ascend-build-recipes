@@ -82,6 +82,7 @@ jobs:
         id: prep
         env:
           SOURCE_REF_OVERRIDE: ${{ inputs.source_ref }}
+          OBS_PREFIX_OVERRIDE: ${{ inputs.obs_prefix }}
         run: |
           set -euo pipefail
           test -f component/component.env || { echo "::error::component.env is missing"; exit 1; }
@@ -93,7 +94,7 @@ jobs:
           : "${COMPONENT:?component.env must set COMPONENT}"
           : "${SOURCE_REPO:?component.env must set SOURCE_REPO}"
           : "${SOURCE_REF:?component.env must set SOURCE_REF}"
-          export OBS_PREFIX="${OBS_PREFIX:-source-builds}"
+          export OBS_PREFIX="${OBS_PREFIX_OVERRIDE:-${OBS_PREFIX:-source-builds}}"
           export ARTIFACT_PATTERN="${ARTIFACT_PATTERN:-*.whl}"
           export ARTIFACT_DIR="$GITHUB_WORKSPACE/artifacts"
           export SOURCE_DIR="$RUNNER_TEMP/source"
